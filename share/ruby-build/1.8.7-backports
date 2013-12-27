@@ -1,4 +1,4 @@
 require_gcc
 
-install_git "ruby-1.8.7-backports" "https://github.com/benweint/ruby.git" "1_8_7_backports" auto_tcltk standard
+install_git "ruby-1.8.7-backports" "https://github.com/benweint/ruby.git" "1_8_7_backports" autoconf auto_tcltk standard
 install_package "rubygems-1.6.2" "http://production.cf.rubygems.org/rubygems/rubygems-1.6.2.tgz#0c95a9869914ba1a45bf71d3b8048420" ruby
