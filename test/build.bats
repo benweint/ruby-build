@@ -421,6 +421,62 @@ nice gem things
 OUT
 }
 
+@test "JRuby+Graal does not install launchers" {
+  executable "${RUBY_BUILD_CACHE_PATH}/jruby-9000.dev/bin/jruby" <<OUT
+#!${BASH}
+# graalvm
+echo jruby "\$@" >> ../build.log
+OUT
+  cached_tarball "jruby-9000.dev"
+
+  run_inline_definition <<DEF
+install_package "jruby-9000.dev" "http://lafo.ssw.uni-linz.ac.at/jruby-9000+graal-macosx-x86_64.tar.gz" jruby
+DEF
+  assert_success
+
+  assert [ ! -e "$INSTALL_ROOT/build.log" ]
+}
+
+@test "JRuby Java 7 missing" {
+  cached_tarball "jruby-9000.dev" bin/jruby
+
+  stub java false
+
+  run_inline_definition <<DEF
+require_java7
+install_package "jruby-9000.dev" "http://ci.jruby.org/jruby-dist-9000.dev-bin.tar.gz" jruby
+DEF
+  assert_failure <<OUT
+ERROR: Java 7 required. Please install a 1.7-compatible JRE.
+OUT
+}
+
+@test "JRuby Java is outdated" {
+  cached_tarball "jruby-9000.dev" bin/jruby
+
+  stub java '-version : echo java version "1.6.0_21" >&2'
+
+  run_inline_definition <<DEF
+require_java7
+install_package "jruby-9000.dev" "http://ci.jruby.org/jruby-dist-9000.dev-bin.tar.gz" jruby
+DEF
+  assert_failure <<OUT
+ERROR: Java 7 required. Please install a 1.7-compatible JRE.
+OUT
+}
+
+@test "JRuby Java 7 up-to-date" {
+  cached_tarball "jruby-9000.dev" bin/jruby
+
+  stub java '-version : echo java version "1.7.0_21" >&2'
+
+  run_inline_definition <<DEF
+require_java7
+install_package "jruby-9000.dev" "http://ci.jruby.org/jruby-dist-9000.dev-bin.tar.gz" jruby
+DEF
+  assert_success
+}
+
 @test "non-writable TMPDIR aborts build" {
   export TMPDIR="${TMP}/build"
   mkdir -p "$TMPDIR"
