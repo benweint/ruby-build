@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-RUBY_BUILD_VERSION="20140225"
+RUBY_BUILD_VERSION="20140524"
 
 set -E
 exec 3<&2 # preserve original stderr at fd 3
@@ -166,14 +166,31 @@ make_package() {
   popd >&4
 }
 
+compute_sha2() {
+  local output
+  if type shasum &>/dev/null; then
+    output="$(shasum -a 256 -b)" || return 1
+    echo "${output% *}"
+  elif type openssl &>/dev/null; then
+    output="$(openssl dgst -sha256)" || return 1
+    echo "${output##* }"
+  elif type sha256sum &>/dev/null; then
+    output="$(sha256sum --quiet)" || return 1
+    echo "${output% *}"
+  else
+    return 1
+  fi
+}
+
 compute_md5() {
+  local output
   if type md5 &>/dev/null; then
     md5 -q
   elif type openssl &>/dev/null; then
-    local output="$(openssl md5)"
+    output="$(openssl md5)" || return 1
     echo "${output##* }"
   elif type md5sum &>/dev/null; then
-    local output="$(md5sum -b)"
+    output="$(md5sum -b)" || return 1
     echo "${output% *}"
   else
     return 1
@@ -181,8 +198,9 @@ compute_md5() {
 }
 
 verify_checksum() {
-  # If there's no MD5 support, return success
-  [ -n "$HAS_MD5_SUPPORT" ] || return 0
+  # If there's no SHA2 support, return success
+  [ -n "$HAS_SHA2_SUPPORT" ] || return 0
+  local checksum_command="compute_sha2"
 
   # If the specified filename doesn't exist, return success
   local filename="$1"
@@ -192,8 +210,14 @@ verify_checksum() {
   local expected_checksum=`echo "$2" | tr [A-Z] [a-z]`
   [ -n "$expected_checksum" ] || return 0
 
+  # If the checksum length is 32 chars, assume MD5, otherwise SHA2
+  if [ "${#expected_checksum}" -eq 32 ]; then
+    [ -n "$HAS_MD5_SUPPORT" ] || return 0
+    checksum_command="compute_md5"
+  fi
+
   # If the computed checksum is empty, return failure
-  local computed_checksum=`echo "$(compute_md5 < "$filename")" | tr [A-Z] [a-z]`
+  local computed_checksum=`echo "$($checksum_command < "$filename")" | tr [A-Z] [a-z]`
   [ -n "$computed_checksum" ] || return 1
 
   if [ "$expected_checksum" != "$computed_checksum" ]; then
@@ -227,7 +251,7 @@ http_head_curl() {
 }
 
 http_get_curl() {
-  curl -C - -o "${2:--}" -qsSLf "$1"
+  curl -q -o "${2:--}" -sSLf "$1"
 }
 
 http_head_wget() {
@@ -235,7 +259,7 @@ http_head_wget() {
 }
 
 http_get_wget() {
-  wget -nv -c -O "${2:--}" "$1"
+  wget -nv -O "${2:--}" "$1"
 }
 
 fetch_tarball() {
@@ -261,8 +285,9 @@ fetch_tarball() {
     tar_args="${tar_args/z/j}"
   fi
 
-  if ! symlink_tarball_from_cache "$package_filename" "$checksum"; then
-    echo "Downloading ${package_filename}..." >&2
+  if ! reuse_existing_tarball "$package_filename" "$checksum"; then
+    local tarball_filename=$(basename $package_url)
+    echo "Downloading ${tarball_filename}..." >&2
     http head "$mirror_url" &&
     download_tarball "$mirror_url" "$package_filename" "$checksum" ||
     download_tarball "$package_url" "$package_filename" "$checksum"
@@ -278,12 +303,18 @@ fetch_tarball() {
   } >&4 2>&1
 }
 
-symlink_tarball_from_cache() {
-  [ -n "$RUBY_BUILD_CACHE_PATH" ] || return 1
-
+reuse_existing_tarball() {
   local package_filename="$1"
-  local cached_package_filename="${RUBY_BUILD_CACHE_PATH}/$package_filename"
   local checksum="$2"
+
+  # Reuse existing file in build location
+  if [ -e "$package_filename" ] && verify_checksum "$package_filename" "$checksum"; then
+    return 0
+  fi
+
+  # Reuse previously downloaded file in cache location
+  [ -n "$RUBY_BUILD_CACHE_PATH" ] || return 1
+  local cached_package_filename="${RUBY_BUILD_CACHE_PATH}/$package_filename"
 
   [ -e "$cached_package_filename" ] || return 1
   verify_checksum "$cached_package_filename" "$checksum" >&4 2>&1 || return 1
@@ -586,7 +617,9 @@ fix_rbx_gem_binstubs() {
     for file in "$gemdir"/*; do
       binstub="${bindir}/${file##*/}"
       rm -f "$binstub"
-      sed -E "s:^#\!.+:#\!${bindir}/ruby:" < "$file" > "$binstub"
+      { echo "#!${bindir}/ruby"
+        cat "$file"
+      } > "$binstub"
       chmod +x "$binstub"
     done
     rm -rf "$gemdir"
@@ -838,9 +871,15 @@ isolated_gem_install() {
 }
 
 apply_ruby_patch() {
+  local patchfile
   case "$1" in
   ruby-* | jruby-* | rubinius-* )
-    patch -p0 -i "${2:--}"
+    patchfile="$(mktemp "${TMP}/ruby-patch.XXXXXX")"
+    cat "${2:--}" >"$patchfile"
+
+    local striplevel=0
+    grep -q '^diff --git a/' "$patchfile" && striplevel=1
+    patch -p$striplevel --force -i "$patchfile"
     ;;
   esac
 }
@@ -974,11 +1013,17 @@ if [ -n "$RUBY_BUILD_SKIP_MIRROR" ]; then
   unset RUBY_BUILD_MIRROR_URL
 fi
 
+if echo test | compute_sha2 >/dev/null; then
+  HAS_SHA2_SUPPORT=1
+else
+  unset HAS_SHA2_SUPPORT
+  unset RUBY_BUILD_MIRROR_URL
+fi
+
 if echo test | compute_md5 >/dev/null; then
   HAS_MD5_SUPPORT=1
 else
   unset HAS_MD5_SUPPORT
-  unset RUBY_BUILD_MIRROR_URL
 fi
 
 SEED="$(date "+%Y%m%d%H%M%S").$$"
