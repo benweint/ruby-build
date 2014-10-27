@@ -821,7 +821,7 @@ build_package_mac_openssl() {
   OPENSSL_CONFIGURE="${OPENSSL_CONFIGURE:-./config}"
 
   # Compile a shared lib with zlib dynamically linked, no kerberos.
-  package_option openssl configure --openssldir="$OPENSSLDIR" zlib-dynamic no-krb5 shared
+  package_option openssl configure --openssldir="$OPENSSLDIR" zlib-dynamic no-ssl2 no-ssl3 no-krb5 shared
 
   # Default MAKE_OPTS are -j 2 which can confuse the build. Thankfully, make
   # gives precedence to the last -j option, so we can override that.
@@ -1027,7 +1027,10 @@ fi
 tmp_executable="${TMP}/ruby-build-test.$$"
 noexec=""
 if mkdir -p "$TMP" && touch "$tmp_executable" 2>/dev/null; then
-  cat > "$tmp_executable" <<<"#!$BASH"
+  cat > "$tmp_executable" <<-EOF
+	#!${BASH}
+	exit 0
+	EOF
   chmod +x "$tmp_executable"
 else
   echo "ruby-build: TMPDIR=$TMP is set to a non-accessible location" >&2
