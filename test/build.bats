@@ -4,6 +4,7 @@ load test_helper
 export RUBY_BUILD_CACHE_PATH="$TMP/cache"
 export MAKE=make
 export MAKE_OPTS="-j 2"
+export CC=cc
 
 setup() {
   mkdir -p "$INSTALL_ROOT"
@@ -459,7 +460,7 @@ print '>>'
 OUT
   cached_tarball "rubinius-2.0.0" bin/ruby
 
-  stub bundle '--version : echo 1' true
+  stub bundle false
   stub rake \
     '--version : echo 1' \
     "install : mkdir -p '$INSTALL_ROOT'; cp -fR . '$INSTALL_ROOT'"
@@ -469,7 +470,6 @@ install_package "rubinius-2.0.0" "http://releases.rubini.us/rubinius-2.0.0.tar.g
 DEF
   assert_success
 
-  unstub bundle
   unstub rake
 
   run ls "${INSTALL_ROOT}/bin"

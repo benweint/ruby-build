@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-RUBY_BUILD_VERSION="20140926"
+RUBY_BUILD_VERSION="20141113"
 
 set -E
 exec 3<&2 # preserve original stderr at fd 3
@@ -83,6 +83,15 @@ os_information() {
     local os="$(cat /etc/{centos,redhat,fedora,system}-release /etc/debian_version 2>/dev/null | head -1)"
     echo "${os:-$(uname -sr)}"
   fi
+}
+
+#  9.1  -> 901
+# 10.9  -> 1009
+# 10.10 -> 1010
+osx_version() {
+  local -a ver
+  IFS=. ver=( `sw_vers -productVersion` )
+  echo $(( ${ver[0]}*100 + ${ver[1]} ))
 }
 
 build_failed() {
@@ -190,7 +199,8 @@ compute_sha2() {
     output="$(shasum -a 256 -b)" || return 1
     echo "${output% *}"
   elif type openssl &>/dev/null; then
-    output="$(openssl dgst -sha256)" || return 1
+    local openssl="$(command -v "$(brew --prefix openssl 2>/dev/null)"/bin/openssl openssl | head -1)"
+    output="$("$openssl" dgst -sha256 2>/dev/null)" || return 1
     echo "${output##* }"
   elif type sha256sum &>/dev/null; then
     output="$(sha256sum --quiet)" || return 1
@@ -469,6 +479,9 @@ build_package_standard() {
   ( if [ "${CFLAGS+defined}" ] || [ "${!PACKAGE_CFLAGS+defined}" ]; then
       export CFLAGS="$CFLAGS ${!PACKAGE_CFLAGS}"
     fi
+    if [ -z "$CC" ] && [ "$(uname -s)" = "Darwin" ] && [ "$(osx_version)" -ge 1010 ]; then
+      export CC=clang
+    fi
     ${!PACKAGE_CONFIGURE:-./configure} --prefix="${!PACKAGE_PREFIX_PATH:-$PREFIX_PATH}" \
       $CONFIGURE_OPTS ${!PACKAGE_CONFIGURE_OPTS} "${!PACKAGE_CONFIGURE_OPTS_ARRAY}" || return 1
   ) >&4 2>&1
@@ -513,8 +526,12 @@ build_package_ree_installer() {
 build_package_rbx() {
   local package_name="$1"
 
-  { bundle --path=vendor/bundle
-    RUBYOPT="-rubygems $RUBYOPT" ./configure --prefix="$PREFIX_PATH" $RUBY_CONFIGURE_OPTS
+  { [ ! -e "Gemfile" ] || bundle --path=vendor/bundle
+    if [ -n "$RUBY_BUILD_CACHE_PATH" ]; then
+      mkdir -p vendor
+      ln -s "$RUBY_BUILD_CACHE_PATH" vendor/prebuilt
+    fi
+    RUBYOPT="-rubygems $RUBYOPT" ./configure --prefix="$PREFIX_PATH" $RUBY_CONFIGURE_OPTS "${RUBY_CONFIGURE_OPTS_ARRAY[@]}"
     rake install
     fix_rbx_gem_binstubs "$PREFIX_PATH"
     fix_rbx_irb "$PREFIX_PATH"
@@ -639,7 +656,7 @@ fix_rbx_gem_binstubs() {
   local bindir="${prefix}/bin"
   local file binstub
   # Symlink Rubinius' `gems/bin/` into `bin/`
-  if [ -d "$gemdir" ]; then
+  if [ -d "$gemdir" ] && [ ! -L "$gemdir" ]; then
     for file in "$gemdir"/*; do
       binstub="${bindir}/${file##*/}"
       rm -f "$binstub"
@@ -715,6 +732,9 @@ require_gcc() {
   fi
 
   export CC="$gcc"
+  if [ "$(uname -s)" = "Darwin" ] && [ "$(osx_version)" -ge 1010 ]; then
+    export MACOSX_DEPLOYMENT_TARGET=10.9
+  fi
 }
 
 locate_gcc() {
@@ -753,7 +773,7 @@ verify_gcc() {
     return 1
   fi
 
-  local version="$("$gcc" --version || true)"
+  local version="$("$gcc" --version 2>/dev/null || true)"
   if [ -z "$version" ]; then
     return 1
   fi
@@ -763,6 +783,15 @@ verify_gcc() {
   fi
 
   echo "$gcc"
+}
+
+require_llvm() {
+  local llvm_version="$1"
+  if [ "$(uname -s)" = "Darwin" ] && [ "$(osx_version)" -ge 1010 ]; then
+    if [[ "$RUBY_CONFIGURE_OPTS" != *--llvm-* ]]; then
+      package_option ruby configure --prebuilt-name="llvm-3.2-x86_64-apple-darwin13.tar.bz2"
+    fi
+  fi
 }
 
 needs_yaml() {
@@ -939,7 +968,7 @@ list_definitions() {
   { for DEFINITION_DIR in "${RUBY_BUILD_DEFINITIONS[@]}"; do
       [ -d "$DEFINITION_DIR" ] && ls "$DEFINITION_DIR"
     done
-  } | sort_versions
+  } | sort_versions | uniq
 }
 
 sort_versions() {
